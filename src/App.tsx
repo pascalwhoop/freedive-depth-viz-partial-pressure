@@ -63,8 +63,8 @@ const generateDiveSeries = (params: DiveParams, step = 0.2): SamplePoint[] => {
 const nearestPoint = (series: SamplePoint[], t: number) => series.reduce((a, b) => (Math.abs(b.timeS - t) < Math.abs(a.timeS - t) ? b : a), series[0]);
 
 export default function App() {
-  const [preset, setPreset] = useState(2);
-  const [params, setParams] = useState<DiveParams>(presets[2].params);
+  const [preset, setPreset] = useState(3);
+  const [params, setParams] = useState<DiveParams>(presets[3].params);
   const [t, setT] = useState(0);
   const [playing, setPlaying] = useState(false);
 
@@ -73,8 +73,15 @@ export default function App() {
     () => series.map((s) => ({ ...s, depthScaled: (s.depthM / params.maxDepthM) * 100, pressureScaled: (s.ambientPressureAta / (1 + params.maxDepthM / 10)) * 100, o2Scaled: (s.o2RemainingUnits / params.o2StartUnits) * 100, po2Scaled: (s.po2EffectiveMmHg / Math.max(1, params.po2SurfaceStartMmHg * (1 + params.maxDepthM / 10))) * 100 })),
     [params.maxDepthM, params.o2StartUnits, params.po2SurfaceStartMmHg, series]
   );
+
+  const descentEnd = params.maxDepthM / params.descentRateMps;
+  const ascentStart = descentEnd + params.bottomTimeS;
+  const last10Start = Math.max(ascentStart, ascentStart + (Math.max(0, params.maxDepthM - 10) / params.maxDepthM) * (params.maxDepthM / params.ascentRateMps));
   const total = series.length ? series[series.length - 1].timeS : 0;
   const current = nearestPoint(series, t);
+
+  const warningPoint = series.find((p) => p.po2EffectiveMmHg < params.warningThresholdMmHg);
+  const blackoutPoint = series.find((p) => p.po2EffectiveMmHg < params.blackoutThresholdMmHg);
 
   useEffect(() => {
     if (!playing) return;
@@ -90,18 +97,18 @@ export default function App() {
   const reset = () => { setT(0); setPlaying(false); };
 
   const explain = current.riskState === 'critical'
-    ? 'Blackout risk zone: usable oxygen pressure is too low to reliably support consciousness.'
+    ? 'Blackout risk zone: usable oxygen pressure is now too low for reliable consciousness support.'
     : current.riskState === 'warning'
-      ? 'Warning zone: pressure support is dropping fast while oxygen stores continue to fall.'
+      ? 'Warning zone: oxygen is still being used while pressure support is dropping quickly during ascent.'
       : current.depthM > 10
-        ? 'At depth, higher water pressure helps oxygen move from your lungs into your blood.'
-        : 'Near surface, pressure support falls sharply. The same oxygen amount becomes less usable.';
+        ? 'At depth, higher water pressure helps keep oxygen usable even while your oxygen stores slowly decrease.'
+        : 'Near the surface, pressure support falls fast. The same oxygen amount becomes much less usable.';
 
   return <div className='app'>
     <header className='top card'>
       <div>
         <h1>Freedive Ascent Risk Visualizer</h1>
-        <p>See the whole story on one timeline: oxygen is being used over time, and pressure support drops hardest in the last 10 m.</p>
+        <p>The key lesson: danger is not only oxygen left, but how pressure loss makes that oxygen less usable near the surface.</p>
       </div>
       <div className='topActions'>
         <button onClick={() => setPlaying((p) => !p)}>{playing ? 'Pause' : 'Play'}</button>
@@ -111,20 +118,28 @@ export default function App() {
 
     <section className='card focusChart'>
       <h2>Unified timeline (all signals layered)</h2>
-      <p className='muted'>All lines are normalized to a 0–100 scale so you can compare shape and timing directly.</p>
+      <p className='muted'>Time cursor stays synchronized with all cards below. Last 10 m ascent is shaded to spotlight the most dangerous phase.</p>
+      <div className='phaseTags'>
+        <span>Descent ends: {descentEnd.toFixed(1)}s</span>
+        <span>Ascent starts: {ascentStart.toFixed(1)}s</span>
+        <span>Last 10 m starts: {last10Start.toFixed(1)}s</span>
+      </div>
       <ResponsiveContainer width='100%' height={360}>
         <LineChart data={normalized}>
           <CartesianGrid strokeDasharray='3 3' />
-          <XAxis dataKey='timeS' type='number' domain={[0, 'dataMax']} label={{ value: 'Time (s)', position: 'insideBottom', offset: -5 }} />
+          <XAxis dataKey='timeS' type='number' domain={[0, 'dataMax']} tickFormatter={(v) => `${Number(v).toFixed(0)}s`} />
           <YAxis domain={[0, 100]} label={{ value: 'Relative level (%)', angle: -90, position: 'insideLeft' }} />
-          <Tooltip />
+          <Tooltip formatter={(value: number, name) => [`${value.toFixed(1)}%`, name]} labelFormatter={(label: number) => `Time ${label.toFixed(1)}s`} />
           <Legend />
-          <ReferenceArea y1={0} y2={40} fill='#fee2e2' fillOpacity={0.25} />
+          <ReferenceArea x1={last10Start} x2={total} fill='#fef3c7' fillOpacity={0.35} />
+          <ReferenceArea y1={0} y2={30} fill='#fee2e2' fillOpacity={0.2} />
           <ReferenceLine x={t} stroke='#1d4ed8' strokeWidth={2} />
+          {warningPoint && <ReferenceLine x={warningPoint.timeS} stroke='#f59e0b' strokeDasharray='4 4' label='Warning' />}
+          {blackoutPoint && <ReferenceLine x={blackoutPoint.timeS} stroke='#dc2626' strokeDasharray='4 4' label='Critical' />}
           <Line dataKey='depthScaled' name='Depth (relative)' stroke='#0369a1' dot={false} />
           <Line dataKey='pressureScaled' name='Water pressure (relative)' stroke='#7c3aed' dot={false} />
           <Line dataKey='o2Scaled' name='Oxygen remaining (%)' stroke='#0f766e' dot={false} />
-          <Line dataKey='po2Scaled' name='Usable oxygen pressure (relative)' stroke='#dc2626' strokeWidth={2.4} dot={false} />
+          <Line dataKey='po2Scaled' name='Usable oxygen pressure (relative)' stroke='#dc2626' strokeWidth={2.7} dot={false} />
         </LineChart>
       </ResponsiveContainer>
       <label className='scrubber'><span>Time scrubber: {t.toFixed(1)}s</span><input type='range' min={0} max={total} step='0.1' value={t} onChange={(e) => setT(Number(e.target.value))} /></label>
@@ -145,17 +160,6 @@ export default function App() {
             ))}
           </section>
         </details>
-
-        <details className='card' open>
-          <summary>Why usable oxygen pressure matters (science)</summary>
-          <ul>
-            <li><strong>Lung-to-blood transfer:</strong> Oxygen moves from alveoli into blood because oxygen pressure in lungs is higher than in venous blood.</li>
-            <li><strong>Pressure gradient drives diffusion:</strong> When usable oxygen pressure falls, that gradient shrinks, so less oxygen enters blood each second.</li>
-            <li><strong>Hemoglobin loading/unloading:</strong> Blood must keep enough oxygen pressure to load in lungs and unload into tissues, especially brain tissue.</li>
-            <li><strong>Near-surface risk:</strong> During ascent, ambient pressure falls quickly (2 ATA at 10 m to 1 ATA at surface), so the same oxygen amount produces much lower usable oxygen pressure.</li>
-          </ul>
-          <p className='muted'>This simulator is simplified for teaching and is not a medical device.</p>
-        </details>
       </section>
 
       <aside className='panel card'>
@@ -163,9 +167,10 @@ export default function App() {
         <ul>
           <li>Depth: {current.depthM.toFixed(1)} m</li><li>Water pressure: {current.ambientPressureAta.toFixed(2)} ATA</li><li>Oxygen remaining: {((current.o2RemainingUnits / params.o2StartUnits) * 100).toFixed(0)}%</li><li>Usable oxygen pressure: {current.po2EffectiveMmHg.toFixed(1)} mmHg</li>
         </ul>
-        <p><strong>Risk status:</strong> {current.riskState}</p>
+        <p><strong>Risk status:</strong> <span className={`risk risk-${current.riskState}`}>{current.riskState}</span></p>
         <p>{explain}</p>
         <p><strong>Double punch:</strong> You used oxygen over time, and now pressure support is disappearing.</p>
+        <p className='muted'>Educational simulator only — not a medical or dive safety device.</p>
       </aside>
     </main>
   </div>;
